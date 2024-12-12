@@ -1,38 +1,41 @@
+import sha1 from 'sha1';
+import { ObjectID } from 'mongodb';
+import Queue from 'bull';
 import dbClient from '../utils/db';
 import redisClient from '../utils/redis';
 
-const { ObjectId } = require('mongodb');
+const userQueue = new Queue('userQueue', 'redis://127.0.0.1:6379');
 
-const sha1 = require('sha1');
+class UsersController {
+  static postNew(request, response) {
+    const { email } = request.body;
+    const { password } = request.body;
 
-class UserController {
-  static async postNew(req, res) {
-    const users = await dbClient.db.collection('users');
-    const { email, password } = req.body;
-
-    // if email or password not in request.body
-    if (!email) return res.status(400).send({ error: 'Missing email' });
-    if (!password) return res.status(400).send({ error: 'Missing password' });
-
-    // if user already exists
-    let queryResult = await users.findOne({ email });
-    if (queryResult) {
-      return res.status(400).send({ error: 'Already exist' });
+    if (!email) {
+      response.status(400).json({ error: 'Missing email' });
+      return;
+    }
+    if (!password) {
+      response.status(400).json({ error: 'Missing password' });
+      return;
     }
 
-    const sha1Password = sha1(password);
-    queryResult = await users.insertOne({ email, password: sha1Password });
-    return res.status(201).send({ id: queryResult.insertedId, email });
+    const users = dbClient.db.collection('users');
+    users.findOne({ email }, (err, user) => {
+      if (user) {
+        response.status(400).json({ error: 'Already exist' });
+      } else {
+        const hashedPassword = sha1(password);
+        users.insertOne(
+          {
+            email,
+            password: hashedPassword,
+          },
+        ).then((result) => {
+          response.status(201).json({ id: result.insertedId, email });
+          userQueue.add({ userId: result.insertedId });
+        }).catch((error) => console.log(error));
+      }
+    });
   }
-
-  static async getMe(req, res) {
-    // retreive token from request headers
-    const token = req.headers['x-token'];
-    if (!token) return res.status(401).send({ error: 'Unauthorized' });
-
-    // retreive token from redis
-    const userId = await redisClient.get(`auth_${token}`);
-    if (!userId) return res.status(401).send({ error: 'Unauthorized' });
-
-    // retreive user from database
 
